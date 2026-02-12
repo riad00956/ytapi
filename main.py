@@ -2,126 +2,97 @@ import os
 import random
 import asyncio
 import yt_dlp
-from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# ---------------- Configuration ----------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Telegram bot token environment থেকে নাও
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is required!")
+# ---------------- Config ----------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# প্রোডাশন এনভায়রনমেন্টে PORT অটোমেটিক রেন্ডার থেকে আসবে
+PORT = int(os.environ.get("PORT", 10000))
 
-MANUAL_PROXIES = [
+PROXIES = [
     "http://197.155.64.226:8090", "http://168.194.248.18:8080",
-    "socks5://115.127.107.106:1080", "http://177.130.25.76:8080",
-    "socks5://111.67.103.90:1080", "socks5://110.235.248.150:1080",
-    "http://93.183.126.135:3128"
+    "socks5://115.127.107.106:1080", "http://177.130.25.76:8080"
 ]
 
-def get_proxy():
-    return random.choice(MANUAL_PROXIES)
-
-# ---------------- FastAPI ----------------
-app = FastAPI()
-telegram_app = None  # Telegram Application later
-
-@app.get("/")
-async def health():
-    return {"status": "online"}
-
-@app.post(f"/webhook/{BOT_TOKEN}")
-async def telegram_webhook(request: Request):
-    update = Update.de_json(await request.json(), telegram_app.bot)
-    await telegram_app.update_queue.put(update)
-    return {"status": "ok"}
-
-# ---------------- Bot Handlers ----------------
+# ---------------- Bot logic ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hello! Send me a YouTube link to get download options.")
+    await update.message.reply_text("👋 Hello! YouTube লিংক পাঠান ডাউনলোড করার জন্য।")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
-    if "youtube.com" not in url and "youtu.be" not in url:
-        return
-
-    status = await update.message.reply_text("🔍 Fetching video info...")
-    opts = {'quiet': True, 'proxy': get_proxy(), 'nocheckcertificate': True}
+    if "youtube.com" not in url and "youtu.be" not in url: return
+    
+    msg = await update.message.reply_text("🔍 তথ্য খোঁজা হচ্ছে...")
+    opts = {'quiet': True, 'proxy': random.choice(PROXIES), 'nocheckcertificate': True}
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats, keyboard, seen = info.get('formats', []), [], set()
-            for f in formats:
-                h = f.get('height')
-                if h and h not in seen and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
-                    keyboard.append([InlineKeyboardButton(f"🎬 {h}p ({f['ext'].upper()})", callback_data=f"{f['format_id']}|{url}")])
-                    seen.add(h)
-        if not keyboard:
-            await status.edit_text("❌ No formats found.")
-            return
-        await status.edit_text(f"🎥 **{info.get('title')[:50]}...**\n\nSelect Quality:",
-                               reply_markup=InlineKeyboardMarkup(keyboard))
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
+        
+        keyboard = []
+        seen_res = set()
+        for f in info.get('formats', []):
+            res = f.get('height')
+            if res and res not in seen_res and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                keyboard.append([InlineKeyboardButton(f"🎬 {res}p", callback_data=f"{f['format_id']}|{url}")])
+                seen_res.add(res)
+        
+        await msg.edit_text(f"🎥 {info.get('title')[:50]}...\n\nকোয়ালিটি সিলেক্ট করুন:", 
+                            reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
-        await status.edit_text(f"❌ Failed to fetch info: {e}")
-
-async def progress_hook(d, context, chat_id, message_id):
-    if d['status'] == 'downloading':
-        curr = asyncio.get_event_loop().time()
-        last = context.user_data.get('last_up', 0)
-        if curr - last > 4.0:
-            p = d.get('_percent_str', '0%')
-            s = d.get('_speed_str', '0 KB/s')
-            txt = f"📥 **Downloading...**\n\n📊 Progress: `{p}`\n⚡ Speed: `{s}`"
-            try:
-                await context.bot.edit_message_text(txt, chat_id, message_id)
-            except: pass
-            context.user_data['last_up'] = curr
+        await msg.edit_text(f"❌ এরর: {str(e)[:100]}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     fid, url = query.data.split('|')
-    chat_id, mid = query.message.chat.id, query.message.message_id
-    path = f"vid_{chat_id}.mp4"
-
-    opts = {
-        'format': fid,
-        'outtmpl': path,
-        'proxy': get_proxy(),
-        'quiet': True,
-        'progress_hooks': [lambda d: asyncio.create_task(progress_hook(d, context, chat_id, mid))]
-    }
+    chat_id = query.message.chat_id
+    path = f"video_{chat_id}.mp4"
 
     try:
-        await query.edit_message_text("🚀 Downloading...")
-        loop = asyncio.get_event_loop()
+        await query.edit_message_text("🚀 ডাউনলোড শুরু হয়েছে...")
+        opts = {'format': fid, 'outtmpl': path, 'proxy': random.choice(PROXIES), 'quiet': True}
+        
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).download([url]))
 
-        await context.bot.edit_message_text("📤 Uploading...", chat_id, mid)
-        with open(path, 'rb') as v:
-            await context.bot.send_video(chat_id, v, caption="✅ Success!", supports_streaming=True)
-
-        await context.bot.delete_message(chat_id, mid)
+        await context.bot.send_video(chat_id, open(path, 'rb'), caption="✅ সম্পন্ন!")
     except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ Error occurred: {e}")
+        await context.bot.send_message(chat_id, f"❌ সমস্যা হয়েছে: {str(e)[:100]}")
     finally:
-        if os.path.exists(path):
-            os.remove(path)
+        if os.path.exists(path): os.remove(path)
 
-# ---------------- Startup ----------------
-async def start_bot():
-    global telegram_app
-    telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    telegram_app.add_handler(CallbackQueryHandler(button_callback))
-    await telegram_app.initialize()
-    await telegram_app.start()
-    print("Bot is running...")
+# ---------------- FastAPI & Bot Runner ----------------
+bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # বট সেটআপ
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    bot_app.add_handler(CallbackQueryHandler(button_callback))
+    
+    await bot_app.initialize()
+    await bot_app.start()
+    # পোলিং মোড (সবচেয়ে হালকা ও সহজ পদ্ধতি)
+    polling_task = asyncio.create_task(bot_app.updater.start_polling())
+    print("🚀 Bot is Online!")
+    yield
+    # বন্ধ করার সময় ক্লিনআপ
+    await bot_app.updater.stop()
+    await bot_app.stop()
+    await bot_app.shutdown()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+async def health():
+    return {"status": "running"}
 
 if __name__ == "__main__":
     import uvicorn
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # এখানে কোনো asyncio.get_event_loop() নেই, তাই এরর আসার চান্স নেই
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
