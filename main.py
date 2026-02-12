@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-# Load ENV
+# Load .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -33,6 +33,7 @@ def health():
 def run_fastapi():
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
+
 
 # ------------------ Telegram Bot ------------------
 
@@ -113,7 +114,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
-    except Exception as e:
+    except Exception:
         await status.edit_text("❌ Failed to fetch video info.")
 
 
@@ -133,9 +134,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "outtmpl": file_path,
         "quiet": True,
         "progress_hooks": [
-            lambda d: progress_hook(
-                d, context, chat_id, message_id, loop
-            )
+            lambda d: progress_hook(d, context, chat_id, message_id, loop)
         ],
     }
 
@@ -177,7 +176,12 @@ async def main():
     # Run FastAPI in background
     threading.Thread(target=run_fastapi, daemon=True).start()
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(
@@ -186,8 +190,9 @@ async def main():
     application.add_handler(CallbackQueryHandler(button_callback))
 
     print("Bot started...")
-
-    await application.run_polling()
+    await application.start()
+    await application.updater.start_polling()  # v20 compatible
+    await application.idle()
 
 
 if __name__ == "__main__":
