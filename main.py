@@ -11,7 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # --- কনফিগারেশন ---
-BOT_TOKEN = "8377715516:AAHa0eJOgQPJ-VNw-AMvwk4CuVkCrTk1LEU"
+BOT_TOKEN = "8377715516:AAFNUqdGmkzCpF_ms6G8spMB4ebIDsYm2u4"
 app = FastAPI()
 
 # আপনার দেওয়া প্রক্সি লিস্ট
